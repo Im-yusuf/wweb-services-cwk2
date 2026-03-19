@@ -1,0 +1,27 @@
+[project]
+name = "quotes-search-engine"
+version = "1.0.0"
+description = "A TF-IDF search engine for quotes.toscrape.com with Boolean queries and positional indexing"
+requires-python = ">=3.9"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "slow: marks tests as slow-running (deselect with '-m \"not slow\"')",
+    "integration: marks end-to-end integration tests",
+    "performance: marks performance/benchmarking tests",
+]
+addopts = "-v --strict-markers --tb=short"
+
+[tool.coverage.run]
+source = ["src"]
+omit = ["tests/*"]
+
+[tool.coverage.report]
+show_missing = true
+fail_under = 90
+exclude_lines = [
+    "pragma: no cover",
+    "if __name__ == .__main__.",
+    "raise NotImplementedError",
+]
