@@ -3,6 +3,33 @@ indexer.py — Inverted index builder with TF-IDF scoring.
 
 Builds a positional inverted index from crawled documents, computes TF-IDF
 weights, and provides efficient save/load to disk in JSON format.
+
+Index structure
+---------------
+The inverted index maps each term to a dictionary::
+
+    { term: { "idf": float,
+              "postings": { doc_id: { "frequency": int,
+                                      "positions": [int],
+                                      "tf": float } } } }
+
+* **Positional information** enables phrase search (see :mod:`search`).
+* **TF** is *augmented frequency*: ``freq / doc_length``, preventing bias
+  toward longer documents.
+* **IDF** uses the smoothed formula ``log((1 + N) / (1 + df)) + 1`` to
+  avoid zero-division and extreme values.
+
+Complexity
+----------
+=====================  ========================================
+Operation              Time complexity
+=====================  ========================================
+``build_index()``      *O(N · L)* — *N* pages, *L* avg tokens
+``_compute_idf()``     *O(V)* — *V* unique terms
+``get_postings()``     *O(1)* dict lookup
+``save_to_disk()``     *O(N · V)* serialisation
+``load_from_disk()``   *O(N · V)* deserialisation
+=====================  ========================================
 """
 
 import json
