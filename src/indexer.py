@@ -36,12 +36,11 @@ import json
 import logging
 import math
 import os
-import re
 import string
 from collections import defaultdict
 from typing import Any, Dict, List, Optional, Set
 
-from src.crawler import Page, Quote
+from src.crawler import Page
 
 logger = logging.getLogger(__name__)
 
@@ -68,9 +67,14 @@ STOP_WORDS: Set[str] = {
 }
 
 # ---------------------------------------------------------------------------
-# Punctuation translation table (built once)
+# Punctuation translation table (built once at import time)
 # ---------------------------------------------------------------------------
 
+# str.maketrans("", "", chars) builds a lookup table that maps every
+# character in `chars` to None (i.e. delete it).  Building this once at
+# module level means every tokenize() call reuses the same object instead
+# of re-allocating it on every invocation. The extra Unicode chars are the
+# ‘curly’ and “double” quotation marks used by the target website.
 _PUNCT_TABLE = str.maketrans("", "", string.punctuation + "\u2018\u2019\u201c\u201d")
 
 # ---------------------------------------------------------------------------
@@ -94,8 +98,12 @@ def tokenize(text: str) -> List[str]:
         Ordered list of tokens preserving position for positional indexing.
     """
     text = text.lower()
+    # Remove all punctuation characters in one O(n) pass using the
+    # pre-built translation table rather than running a regex per token.
     text = text.translate(_PUNCT_TABLE)
     tokens = text.split()
+    # Discard pure-digit tokens (page numbers, years, counters) since
+    # they appear in many documents and rarely carry search intent.
     return [t for t in tokens if t and not t.isdigit()]
 
 
@@ -202,7 +210,11 @@ class Indexer:
         if not tokens:
             return
 
-        # Count frequencies and record positions
+        # Use enumerate so each token gets a monotonically-increasing
+        # position number within this document.  These positions are stored
+        # in the index to support phrase-search adjacency checks later.
+        # defaultdict(list) auto-creates an empty list on first access so we
+        # never need an explicit "if term not in term_positions" guard.
         term_positions: Dict[str, List[int]] = defaultdict(list)
         for position, token in enumerate(tokens):
             term_positions[token].append(position)
@@ -230,7 +242,13 @@ class Indexer:
         to avoid zero-division and extreme values.
         """
         for term, entry in self.index.items():
+            # df = document frequency: how many documents contain this term.
             df = len(entry["postings"])
+            # Smoothed IDF formula breakdown:
+            #   (1 + N)  — add 1 to total docs so N=0 never divides by zero
+            #   (1 + df) — add 1 to df so rare terms don’t explode toward ∞
+            #   + 1      — additive smoothing keeps IDF >= 1 even for terms
+            #              that appear in every document (df == N)
             entry["idf"] = math.log((1 + self.total_docs) / (1 + df)) + 1
 
     # ----- lookup helpers -----
@@ -295,7 +313,9 @@ class Indexer:
         """
         os.makedirs(os.path.dirname(filepath) or ".", exist_ok=True)
 
-        # Convert integer doc_id keys to strings for JSON compatibility
+        # JSON only supports string keys.  We store doc_ids as integers in
+        # memory for O(1) dict access, but must convert them to strings when
+        # serialising so json.dump doesn’t raise a TypeError.
         serialisable_index: Dict[str, Any] = {}
         for term, entry in self.index.items():
             serialisable_index[term] = {
@@ -335,7 +355,8 @@ class Indexer:
 
         self.total_docs = data["total_docs"]
 
-        # Reconstruct integer doc_id keys
+        # JSON stores all mapping keys as strings, so we must explicitly
+        # cast each doc_id string back to int to match the in-memory schema.
         self.index = {}
         for term, entry in data["index"].items():
             self.index[term] = {

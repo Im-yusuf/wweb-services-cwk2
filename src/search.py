@@ -46,7 +46,7 @@ from collections import defaultdict
 from enum import Enum, auto
 from typing import Any, Dict, List, Optional, Set, Tuple
 
-from src.indexer import Indexer, tokenize, remove_stop_words
+from src.indexer import Indexer, tokenize
 
 logger = logging.getLogger(__name__)
 
@@ -149,6 +149,9 @@ def tokenize_query(query: str) -> List[Token]:
             i += 1
         word = query[start:i]
 
+        # Upper-case the word for operator comparison so that AND, and, And
+        # are all treated as the AND operator.  Non-operators are stored
+        # lower-cased (via word.lower()) for consistent index lookups.
         upper = word.upper()
         if upper == "AND":
             tokens.append(Token(TokenType.AND, "AND"))
@@ -237,6 +240,8 @@ class QueryParser:
         if self._current().type == TokenType.NOT:
             self._consume(TokenType.NOT)
             operand = self._not_expr()
+            # Set complement: every known document that is NOT in operand.
+            # self.indexer.documents.keys() is the universe of all doc IDs.
             all_docs = set(self.indexer.documents.keys())
             return all_docs - operand
         return self._primary()
@@ -258,7 +263,9 @@ class QueryParser:
                 return set()
             return set(postings.keys())
 
-        # Unexpected token — treat as empty result
+        # Unexpected token (e.g. dangling operator or syntax error).
+        # Return empty set so the parse completes without raising, and the
+        # caller gets zero results rather than an unhandled exception.
         return set()
 
 
@@ -349,7 +356,9 @@ class SearchEngine:
         if not terms:
             return []
 
-        # Find pages containing ALL query terms (AND semantics)
+        # Find pages containing ALL query terms (AND semantics).
+        # matching_docs starts as None so the first term's doc-set can seed
+        # it directly (avoids intersecting with an unrelated starting set).
         matching_docs: Optional[Set[int]] = None
         for term in terms:
             postings = self.indexer.get_postings(term)
@@ -357,6 +366,7 @@ class SearchEngine:
                 return []  # Term not in index → no pages match
             term_docs = set(postings.keys())
             if matching_docs is None:
+                # First term: seed the intersection with this term’s docs.
                 matching_docs = term_docs
             else:
                 matching_docs = matching_docs & term_docs
@@ -434,7 +444,11 @@ class SearchEngine:
         if not candidate_docs:
             return []
 
-        # Second pass: verify positional adjacency
+        # Second pass: verify positional adjacency.
+        # For each document, take every position where the first phrase term
+        # occurs and check whether all subsequent terms occur at
+        # start_pos + 1, start_pos + 2, etc.  This confirms the words appear
+        # consecutively in the original document text.
         phrase_docs: Set[int] = set()
         for doc_id in candidate_docs:
             # Get positions of the first term
@@ -443,6 +457,8 @@ class SearchEngine:
             for start_pos in start_positions:
                 match = True
                 for offset, term in enumerate(terms[1:], start=1):
+                    # The (offset)th word in the phrase must appear exactly
+                    # `offset` positions after the anchor start_pos.
                     positions = term_postings[term][doc_id]["positions"]
                     if (start_pos + offset) not in positions:
                         match = False
@@ -501,7 +517,10 @@ class SearchEngine:
         if not matching_ids:
             return []
 
-        # Score matched documents by summing TF-IDF for all word tokens
+        # Score matched documents by summing TF-IDF for all word tokens.
+        # Only WORD tokens are included here — AND / OR / NOT operator tokens
+        # are excluded because they are not real query terms and have no
+        # entries in the inverted index.
         word_terms = [t.value for t in tokens if t.type == TokenType.WORD]
         scores: Dict[int, float] = defaultdict(float)
 
@@ -559,7 +578,10 @@ class SearchEngine:
             # Find close matches
             candidates: List[Tuple[int, str]] = []
             for vocab_word in self.indexer.vocab:
-                # Quick length pre-filter to avoid unnecessary computation
+                # Quick length pre-filter: if the vocabulary word is more than
+                # max_edit_distance characters longer or shorter than the query
+                # term, the edit distance is guaranteed to exceed the threshold,
+                # so we can skip the expensive DP computation entirely.
                 if abs(len(vocab_word) - len(term)) > self.max_edit_distance:
                     continue
                 dist = _edit_distance(term, vocab_word)
@@ -598,6 +620,11 @@ class SearchEngine:
         if not query or not query.strip():
             return []
 
+        # stripped is used for quote detection so leading/trailing whitespace
+        # doesn’t prevent recognition of a quoted phrase such as  " foo bar ".
+        # The original `query` (not stripped) is passed to sub-methods because
+        # boolean_search and search re-strip/tokenise internally, so passing
+        # query preserves any intentional casing of operator keywords.
         stripped = query.strip()
 
         # 1. Detect exact phrase queries (wrapped in double quotes)

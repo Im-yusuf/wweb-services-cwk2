@@ -28,7 +28,7 @@ where *D* is the inter-request delay.
 import logging
 import time
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional
 
 import requests
 from bs4 import BeautifulSoup
@@ -81,7 +81,11 @@ class Page:
         """Combine all quote text, authors, and tags for indexing."""
         parts = []
         for q in self.quotes:
+            # Concatenate text, author name, and all tags into one string.
+            # Tags are space-joined so "life" and "love" become separate tokens.
             parts.append(f"{q.text} {q.author} {' '.join(q.tags)}")
+        # Join all quotes on this page with a space so positions are
+        # continuous across the whole page document.
         return " ".join(parts)
 
     def to_dict(self) -> Dict[str, Any]:
@@ -122,6 +126,8 @@ def fetch_page(url: str, timeout: int = 15) -> requests.Response:
     Raises:
         requests.RequestException: On any network-level failure.
     """
+    # Identify the bot politely so the server can distinguish it from
+    # a real browser.  Some servers reject requests without a User-Agent.
     headers = {
         "User-Agent": (
             "Mozilla/5.0 (compatible; UniversitySearchBot/1.0; "
@@ -130,6 +136,8 @@ def fetch_page(url: str, timeout: int = 15) -> requests.Response:
         "Accept": "text/html,application/xhtml+xml",
     }
     response = requests.get(url, headers=headers, timeout=timeout)
+    # Raise an HTTPError for 4xx/5xx status codes so callers don't
+    # have to inspect the status code manually.
     response.raise_for_status()
     return response
 
@@ -150,16 +158,20 @@ def parse_quotes(html: str) -> List[Dict[str, Any]]:
     soup = BeautifulSoup(html, "lxml")
     results: List[Dict[str, Any]] = []
 
+    # Each quote on the page lives inside a <div class="quote"> block.
     for div in soup.select("div.quote"):
-        text_span = div.select_one("span.text")
-        author_span = div.select_one("small.author")
-        tag_anchors = div.select("a.tag")
+        # CSS selectors match the exact HTML structure of the target site.
+        text_span = div.select_one("span.text")      # e.g. “The quote text”
+        author_span = div.select_one("small.author")  # e.g. Albert Einstein
+        tag_anchors = div.select("a.tag")             # zero or more tag links
 
         if text_span is None or author_span is None:
+            # Skip incomplete quote blocks rather than crashing the whole crawl.
             logger.warning("Skipping malformed quote block — missing text or author.")
             continue
 
-        # Strip surrounding Unicode quotes (\u201c, \u201d)
+        # The site wraps quote text in Unicode “left/right” quotation marks.
+        # Strip them so the stored text is clean plain text.
         raw_text = text_span.get_text(strip=True)
         cleaned_text = raw_text.strip("\u201c\u201d\"'")
 
@@ -182,10 +194,12 @@ def has_next_page(html: str) -> Optional[str]:
         Relative path string (e.g. ``/page/2/``) or ``None``.
     """
     soup = BeautifulSoup(html, "lxml")
+    # The site uses a Bootstrap-style "Next" button inside <li class="next">
+    # containing an <a> tag whose href is the relative path to the next page.
     next_btn = soup.select_one("li.next > a")
     if next_btn and next_btn.get("href"):
-        return next_btn["href"]
-    return None
+        return next_btn["href"]  # e.g. "/page/2/"
+    return None  # No next-page button means this is the last page.
 
 
 # ---------------------------------------------------------------------------
@@ -219,6 +233,9 @@ class Crawler:
 
     def _wait(self) -> None:
         """Block until the politeness window has elapsed since the last request."""
+        # Compare wall-clock time rather than always sleeping self.delay seconds.
+        # This way, any processing time between requests counts toward the delay,
+        # so we never sleep longer than necessary.
         elapsed = time.time() - self._last_request_time
         remaining = self.delay - elapsed
         if remaining > 0:
@@ -244,6 +261,8 @@ class Crawler:
                 logger.info("Fetched %s (attempt %d)", url, attempt)
                 return response.text
             except requests.RequestException as exc:
+                # Exponential backoff: wait 2s, then 4s, then 8s...
+                # This avoids hammering a temporarily-down server.
                 backoff = 2 ** attempt
                 logger.warning(
                     "Attempt %d/%d failed for %s: %s — retrying in %ds",
@@ -253,6 +272,7 @@ class Crawler:
                     exc,
                     backoff,
                 )
+                # Don't sleep after the final attempt — just fall through to the error.
                 if attempt < self.max_retries:
                     time.sleep(backoff)
 
@@ -289,6 +309,9 @@ class Crawler:
                 for raw in raw_quotes
             ]
 
+            # Only add the page if it contained at least one quote.
+            # Empty pages (e.g. after the last real page) are skipped,
+            # and the page_id counter only advances for real documents.
             if quotes:
                 pages.append(Page(
                     page_id=page_id_counter,
@@ -297,6 +320,7 @@ class Crawler:
                 ))
                 page_id_counter += 1
 
+            # Check whether the HTML contains a "Next" link to continue crawling.
             path = has_next_page(html)
             logger.info(
                 "Crawled %d pages so far. Next page: %s",
