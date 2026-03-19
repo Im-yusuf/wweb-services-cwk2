@@ -2,8 +2,42 @@
 search.py — Search engine with TF-IDF ranking, Boolean queries, and suggestions.
 
 Provides a query parser that supports AND, OR, NOT operators with proper
-precedence, ranked retrieval using precomputed TF-IDF scores, and simple
-edit-distance-based query suggestions for misspelled terms.
+precedence, ranked retrieval using precomputed TF-IDF scores, exact phrase
+matching using positional information, and simple edit-distance-based query
+suggestions for misspelled terms.
+
+Algorithm overview
+------------------
+* **Ranked retrieval** uses a *TF-IDF* weighting scheme.  Term frequency is
+  normalised by document length to avoid bias toward longer pages.  IDF is
+  smoothed: ``log((1 + N) / (1 + df)) + 1``.  Multi-word queries require
+  **all** terms to appear in a page (AND semantics) and pages are ranked by
+  the sum of per-term TF-IDF scores.
+
+* **Phrase search** (triggered by quoting, e.g. ``"good friends"``) exploits
+  the positional index.  After verifying all phrase terms appear in a page
+  the engine checks whether consecutive positions form a contiguous run —
+  confirming the terms appear adjacently in the original text.
+
+* **Boolean queries** are parsed by a hand-written recursive-descent parser
+  implementing standard precedence: NOT > AND > OR.  Parenthesised
+  sub-expressions are supported.
+
+* **Spelling suggestions** use Levenshtein edit distance with a length
+  pre-filter to prune the vocabulary quickly.
+
+Complexity summary
+------------------
+=============================  ================================
+Operation                      Time complexity
+=============================  ================================
+``search()``                   *O(Q · P)* — *Q* terms, *P* max postings per term
+``phrase_search()``            *O(Q · P · H)* — *H* = positions per posting
+``boolean_search()``           *O(Q · D)* — *D* = total documents
+``suggest()``                  *O(T · V)* — *T* terms, *V* = vocabulary size
+``_edit_distance()``           *O(|a| · |b|)* per pair
+``Indexer.build_index()``      *O(N · L)* — *N* pages, *L* avg token count
+=============================  ================================
 """
 
 import logging
@@ -352,6 +386,93 @@ class SearchEngine:
 
         return results
 
+    # ----- phrase search (uses positional index) -----
+
+    def phrase_search(self, phrase: str, top_k: int = 10) -> List[SearchResult]:
+        """Search for an exact phrase using positional information.
+
+        Verifies that all terms appear in the document **and** that their
+        recorded positions form a contiguous ascending sequence with
+        step 1, confirming the words appear adjacently in the original text.
+
+        Time complexity: *O(Q · P · H)* where *Q* is the number of phrase
+        terms, *P* is the maximum posting-list length, and *H* is the
+        maximum number of positions per posting.
+
+        Args:
+            phrase: Exact phrase to search for (without surrounding quotes).
+            top_k: Maximum number of results.
+
+        Returns:
+            List of :class:`SearchResult` ordered by TF-IDF score.
+        """
+        if not phrase or not phrase.strip():
+            return []
+
+        terms = tokenize(phrase)
+        if not terms:
+            return []
+
+        # Single-word phrase degrades to normal ranked search
+        if len(terms) == 1:
+            return self.search(phrase, top_k=top_k)
+
+        # First pass: find pages containing ALL terms (same as ranked)
+        candidate_docs: Optional[Set[int]] = None
+        term_postings: Dict[str, Dict[int, Any]] = {}
+        for term in terms:
+            postings = self.indexer.get_postings(term)
+            if postings is None:
+                return []
+            term_postings[term] = postings
+            doc_ids = set(postings.keys())
+            if candidate_docs is None:
+                candidate_docs = doc_ids
+            else:
+                candidate_docs = candidate_docs & doc_ids
+
+        if not candidate_docs:
+            return []
+
+        # Second pass: verify positional adjacency
+        phrase_docs: Set[int] = set()
+        for doc_id in candidate_docs:
+            # Get positions of the first term
+            start_positions = term_postings[terms[0]][doc_id]["positions"]
+
+            for start_pos in start_positions:
+                match = True
+                for offset, term in enumerate(terms[1:], start=1):
+                    positions = term_postings[term][doc_id]["positions"]
+                    if (start_pos + offset) not in positions:
+                        match = False
+                        break
+                if match:
+                    phrase_docs.add(doc_id)
+                    break  # One match per doc is sufficient
+
+        if not phrase_docs:
+            return []
+
+        # Rank by TF-IDF
+        scores: Dict[int, float] = defaultdict(float)
+        for term in terms:
+            postings = term_postings[term]
+            idf = self.indexer.get_idf(term)
+            for doc_id in phrase_docs:
+                if doc_id in postings:
+                    scores[doc_id] += postings[doc_id]["tf"] * idf
+
+        ranked = sorted(scores.items(), key=lambda x: (-x[1], x[0]))
+
+        results: List[SearchResult] = []
+        for doc_id, score in ranked[:top_k]:
+            doc = self.indexer.get_document(doc_id)
+            if doc is not None:
+                results.append(SearchResult(doc_id=doc_id, score=score, document=doc))
+
+        return results
+
     # ----- Boolean search -----
 
     def boolean_search(self, query: str) -> List[SearchResult]:
@@ -456,11 +577,16 @@ class SearchEngine:
     # ----- convenience: auto-detect query type -----
 
     def find(self, query: str, top_k: int = 10) -> List[SearchResult]:
-        """Smart search that detects Boolean operators or falls back to ranked.
+        """Smart search that auto-detects query type.
 
-        If the query contains ``AND``, ``OR``, ``NOT`` (case-insensitive) or
-        parentheses, it is evaluated as a Boolean query.  Otherwise, a
-        standard TF-IDF ranked search is performed.
+        Detection order:
+            1. **Phrase search** — if the query is wrapped in double-quotes
+               (e.g. ``"good friends"``), an exact phrase search is performed
+               using the positional index.
+            2. **Boolean search** — if the query contains uppercase ``AND``,
+               ``OR``, ``NOT`` or parentheses, a Boolean query is evaluated.
+            3. **Ranked search** — otherwise, a standard TF-IDF ranked search
+               with AND semantics is performed.
 
         Args:
             query: Raw query string.
@@ -472,9 +598,17 @@ class SearchEngine:
         if not query or not query.strip():
             return []
 
-        # Detect Boolean operators (uppercase only, must be whole words)
+        stripped = query.strip()
+
+        # 1. Detect exact phrase queries (wrapped in double quotes)
+        if stripped.startswith('"') and stripped.endswith('"') and len(stripped) > 2:
+            phrase = stripped[1:-1]
+            return self.phrase_search(phrase, top_k=top_k)
+
+        # 2. Detect Boolean operators (uppercase only, must be whole words)
         boolean_pattern = r"\b(AND|OR|NOT)\b|[()]"
         if re.search(boolean_pattern, query):
             return self.boolean_search(query)
 
+        # 3. Default: ranked TF-IDF search
         return self.search(query, top_k=top_k)
