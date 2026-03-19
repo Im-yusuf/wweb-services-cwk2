@@ -45,7 +45,10 @@ HELP_TEXT = textwrap.dedent("""\
       build                 Crawl the website, build the index, and save to disk.
       load                  Load a previously saved index from disk.
       print <word>          Display the full index entry for a word.
-      find <query>          Search for quotes (supports Boolean AND/OR/NOT).
+      find <query>          Search for quotes matching the query.
+                            • Multi-word: AND semantics (e.g. find good friends)
+                            • Phrase:     wrap in quotes  (e.g. find "good friends")
+                            • Boolean:    AND / OR / NOT  (e.g. find love AND NOT hate)
       suggest <query>       Get spelling suggestions for query terms.
       help                  Show this help message.
       quit / exit           Exit the search engine.

@@ -3,7 +3,26 @@ crawler.py — Web crawler for quotes.toscrape.com
 
 Crawls all pages of the quotes website, extracting quote text, author, and tags.
 Implements polite crawling with configurable delay and retry logic with
-exponential backoff. Designed for testability with separated HTTP request logic.
+exponential backoff.  Designed for testability with separated HTTP request logic.
+
+Design choices
+--------------
+* **Politeness** — A configurable delay (default 6 s) is enforced between
+  consecutive requests using wall-clock comparison, ensuring we never hit the
+  server faster than the allowed rate regardless of processing time.
+
+* **Resilience** — Transient HTTP errors are retried up to *max_retries*
+  times with exponential back-off (2^attempt seconds), preventing a single
+  flaky response from aborting the entire crawl.
+
+* **Testability** — The HTTP layer (:func:`fetch_page`) is injected as a
+  callable, allowing tests to substitute a mock without monkey-patching.
+
+Complexity
+----------
+``crawl()`` visits *P* pages sequentially.  Each page yields *Q* quotes
+parsed in *O(H)* where *H* is the HTML size.  Overall: **O(P · (H + D))**
+where *D* is the inter-request delay.
 """
 
 import logging
