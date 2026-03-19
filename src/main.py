@@ -9,18 +9,19 @@ search with ranked or Boolean queries.
 import json
 import logging
 import os
-import sys
 import textwrap
-from typing import List, Optional
+from typing import Optional
 
-from src.crawler import Crawler, Page, Quote
+from src.crawler import Crawler
 from src.indexer import Indexer
-from src.search import SearchEngine, SearchResult
+from src.search import SearchEngine
 
 # ---------------------------------------------------------------------------
 # Logging configuration
 # ---------------------------------------------------------------------------
 
+# Configure the root logger once at application startup.  All modules that
+# call logging.getLogger(__name__) will inherit this handler and format.
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
@@ -32,6 +33,9 @@ logger = logging.getLogger(__name__)
 # Constants
 # ---------------------------------------------------------------------------
 
+# os.path.join uses the correct path separator for the current OS
+# (forward-slash on macOS/Linux, backslash on Windows) so the path
+# is correct regardless of where the project is run.
 INDEX_PATH = os.path.join("data", "index.json")
 BANNER = r"""
 ╔══════════════════════════════════════════════════════╗
@@ -83,6 +87,8 @@ class CLI:
             print("[!] No pages were retrieved. Aborting build.")
             return
 
+        # Use sum() with a generator expression to count total quotes across
+        # all crawled pages without building an intermediate list.
         total_quotes = sum(len(p.quotes) for p in pages)
         print(f"[+] Crawled {len(pages)} pages ({total_quotes} quotes).")
         print("[*] Building inverted index …")
@@ -142,6 +148,8 @@ class CLI:
         print(f"  Appears in {len(entry['postings'])} page(s):\n")
 
         for doc_id, posting in sorted(entry["postings"].items()):
+            # sorted() gives deterministic output order (low→high doc_id)
+            # instead of Python's arbitrary dict-insertion order.
             doc = self.indexer.get_document(doc_id)
             url = doc.get("url", "N/A") if doc else "N/A"
             print(
@@ -177,6 +185,8 @@ class CLI:
             print(f"  {i}. [Score: {result.score:.4f}] Page {result.doc_id}: {url}")
             for q in doc.get("quotes", []):
                 print(f"     \"{q['text']}\"")
+                # \u2014 is the Unicode em-dash (—), used as an attribution
+                # separator between the quote text and the author name.
                 print(f"     \u2014 {q['author']}  |  Tags: {', '.join(q['tags'])}")
             print()
 
@@ -215,14 +225,21 @@ class CLI:
             try:
                 raw = input("search> ").strip()
             except (EOFError, KeyboardInterrupt):
+                # EOFError is raised when stdin is closed (e.g. piped input
+                # or a non-interactive shell). KeyboardInterrupt handles
+                # Ctrl-C. Both are treated as a clean exit.
                 print("\n[*] Goodbye!")
                 break
 
             if not raw:
                 continue
 
+            # maxsplit=1 splits only on the first space so multi-word
+            # arguments like  find good friends  are kept intact as a single
+            # string in parts[1] rather than being split into separate words.
             parts = raw.split(maxsplit=1)
             command = parts[0].lower()
+            # Default argument to empty string when no argument is provided.
             argument = parts[1] if len(parts) > 1 else ""
 
             if command in ("quit", "exit"):
