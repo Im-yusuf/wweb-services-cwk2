@@ -193,7 +193,7 @@ python -m pytest tests/ -m integration
 python -m pytest tests/ -m performance
 ```
 
-**Test suite:** 178 tests | 98% coverage | <5 s runtime
+**Test suite:** 179 tests | 98% coverage | <5 s runtime
 
 The test suite uses:
 - **pytest fixtures** for shared setup (see `conftest.py`)

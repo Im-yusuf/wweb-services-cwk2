@@ -250,11 +250,12 @@ class TestEditDistance:
             "sitting", "kitten"
         )
 
-    def test_symmetry(self) -> None:
-        """Distance should be symmetric."""
-        assert _edit_distance("kitten", "sitting") == _edit_distance(
-            "sitting", "kitten"
-        )
+    def test_triangle_inequality(self) -> None:
+        """Edit distance should satisfy the triangle inequality."""
+        d_ab = _edit_distance("cat", "bat")
+        d_bc = _edit_distance("bat", "bats")
+        d_ac = _edit_distance("cat", "bats")
+        assert d_ac <= d_ab + d_bc
 
 
 # ---------------------------------------------------------------------------
