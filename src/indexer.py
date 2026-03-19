@@ -14,7 +14,7 @@ import string
 from collections import defaultdict
 from typing import Any, Dict, List, Optional, Set
 
-from src.crawler import Quote
+from src.crawler import Page, Quote
 
 logger = logging.getLogger(__name__)
 
@@ -126,50 +126,50 @@ class Indexer:
 
     # ----- core building -----
 
-    def build_index(self, quotes: List[Quote]) -> None:
-        """Build the inverted index from a list of :class:`Quote` objects.
+    def build_index(self, pages: List[Page]) -> None:
+        """Build the inverted index from a list of :class:`Page` objects.
 
-        For each document the combined text (quote + author + tags) is
-        tokenized and each token is recorded with its position.  After all
-        documents are processed, IDF values are computed.
+        For each page the combined text of all quotes (text + author + tags)
+        is tokenized and each token is recorded with its position.  After all
+        pages are processed, IDF values are computed.
 
-        Time complexity: *O(N · L)* where *N* = number of documents and
-        *L* = average document length.
+        Time complexity: *O(N · L)* where *N* = number of pages and
+        *L* = average page text length.
 
         Args:
-            quotes: Ordered list of ``Quote`` objects from the crawler.
+            pages: Ordered list of ``Page`` objects from the crawler.
         """
         self.index = {}
         self.documents = {}
-        self.total_docs = len(quotes)
+        self.total_docs = len(pages)
 
         if self.total_docs == 0:
-            logger.warning("build_index called with empty quote list.")
+            logger.warning("build_index called with empty page list.")
             return
 
-        for quote in quotes:
-            self._index_document(quote)
+        for page in pages:
+            self._index_page(page)
 
         self._compute_idf()
         self.vocab = set(self.index.keys())
 
         logger.info(
-            "Index built: %d documents, %d unique terms.",
+            "Index built: %d pages, %d unique terms.",
             self.total_docs,
             len(self.vocab),
         )
 
-    def _index_document(self, quote: Quote) -> None:
-        """Add a single document to the index.
+    def _index_page(self, page: Page) -> None:
+        """Add a single page to the index.
 
         Args:
-            quote: The quote to index.
+            page: The page to index.
         """
-        # Store document metadata
-        self.documents[quote.doc_id] = quote.to_dict()
+        # Store page metadata
+        self.documents[page.page_id] = page.to_dict()
 
-        # Combine all textual fields into one string for indexing
-        combined_text = f"{quote.text} {quote.author} {' '.join(quote.tags)}"
+        # Combine all textual content from all quotes on the page
+        combined_text = page.full_text
         tokens = tokenize(combined_text)
 
         if not tokens:
@@ -190,7 +190,7 @@ class Indexer:
             # Augmented term frequency to prevent bias toward longer docs
             tf = frequency / doc_length
 
-            self.index[term]["postings"][quote.doc_id] = {
+            self.index[term]["postings"][page.page_id] = {
                 "frequency": frequency,
                 "positions": positions,
                 "tf": tf,

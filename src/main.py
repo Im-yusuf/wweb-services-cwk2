@@ -13,7 +13,7 @@ import sys
 import textwrap
 from typing import List, Optional
 
-from src.crawler import Crawler, Quote
+from src.crawler import Crawler, Page, Quote
 from src.indexer import Indexer
 from src.search import SearchEngine, SearchResult
 
@@ -74,15 +74,16 @@ class CLI:
         """Crawl, build index, and save to disk."""
         print("\n[*] Starting crawl of quotes.toscrape.com …")
         crawler = Crawler()
-        quotes = crawler.crawl()
+        pages = crawler.crawl()
 
-        if not quotes:
-            print("[!] No quotes were retrieved. Aborting build.")
+        if not pages:
+            print("[!] No pages were retrieved. Aborting build.")
             return
 
-        print(f"[+] Crawled {len(quotes)} quotes.")
+        total_quotes = sum(len(p.quotes) for p in pages)
+        print(f"[+] Crawled {len(pages)} pages ({total_quotes} quotes).")
         print("[*] Building inverted index …")
-        self.indexer.build_index(quotes)
+        self.indexer.build_index(pages)
         print(f"[+] Index built: {len(self.indexer.vocab)} unique terms.")
 
         print(f"[*] Saving index to {INDEX_PATH} …")
@@ -104,7 +105,7 @@ class CLI:
             self.indexer.load_from_disk(INDEX_PATH)
             self.engine = SearchEngine(self.indexer)
             print(
-                f"[+] Loaded {self.indexer.total_docs} documents, "
+                f"[+] Loaded {self.indexer.total_docs} pages, "
                 f"{len(self.indexer.vocab)} terms."
             )
             print("[+] Search engine ready.\n")
@@ -135,15 +136,13 @@ class CLI:
 
         print(f"\n--- Index entry for '{term}' ---")
         print(f"  IDF: {entry['idf']:.4f}")
-        print(f"  Appears in {len(entry['postings'])} document(s):\n")
+        print(f"  Appears in {len(entry['postings'])} page(s):\n")
 
         for doc_id, posting in sorted(entry["postings"].items()):
             doc = self.indexer.get_document(doc_id)
-            doc_preview = ""
-            if doc:
-                doc_preview = f' — "{doc["text"][:60]}…"'
+            url = doc.get("url", "N/A") if doc else "N/A"
             print(
-                f"    Doc {doc_id}{doc_preview}\n"
+                f"    Page {doc_id} ({url})\n"
                 f"      Frequency : {posting['frequency']}\n"
                 f"      TF        : {posting['tf']:.4f}\n"
                 f"      Positions : {posting['positions']}"
@@ -168,14 +167,15 @@ class CLI:
                 print(f"    Did you mean: {', '.join(suggestions)}?")
             return
 
-        print(f"\n--- Search results for '{query}' ({len(results)} found) ---\n")
+        print(f"\n--- Search results for '{query}' ({len(results)} page(s) found) ---\n")
         for i, result in enumerate(results, 1):
             doc = result.document
-            print(
-                f"  {i}. [Score: {result.score:.4f}] (Doc {result.doc_id})\n"
-                f"     \"{doc['text']}\"\n"
-                f"     — {doc['author']}  |  Tags: {', '.join(doc['tags'])}\n"
-            )
+            url = doc.get("url", "N/A")
+            print(f"  {i}. [Score: {result.score:.4f}] Page {result.doc_id}: {url}")
+            for q in doc.get("quotes", []):
+                print(f"     \"{q['text']}\"")
+                print(f"     \u2014 {q['author']}  |  Tags: {', '.join(q['tags'])}")
+            print()
 
     def cmd_suggest(self, query: str) -> None:
         """Show spelling suggestions for query terms."""

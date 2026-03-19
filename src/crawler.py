@@ -24,7 +24,6 @@ logger = logging.getLogger(__name__)
 class Quote:
     """Represents a single scraped quote."""
 
-    doc_id: int
     text: str
     author: str
     tags: List[str]
@@ -32,7 +31,6 @@ class Quote:
     def to_dict(self) -> Dict[str, Any]:
         """Serialise quote to a plain dictionary."""
         return {
-            "doc_id": self.doc_id,
             "text": self.text,
             "author": self.author,
             "tags": self.tags,
@@ -42,10 +40,46 @@ class Quote:
     def from_dict(cls, data: Dict[str, Any]) -> "Quote":
         """Deserialise a quote from a dictionary."""
         return cls(
-            doc_id=data["doc_id"],
             text=data["text"],
             author=data["author"],
             tags=data["tags"],
+        )
+
+
+@dataclass
+class Page:
+    """Represents a single crawled web page containing quotes.
+
+    Each page of the website is treated as one document in the index.
+    """
+
+    page_id: int
+    url: str
+    quotes: List[Quote] = field(default_factory=list)
+
+    @property
+    def full_text(self) -> str:
+        """Combine all quote text, authors, and tags for indexing."""
+        parts = []
+        for q in self.quotes:
+            parts.append(f"{q.text} {q.author} {' '.join(q.tags)}")
+        return " ".join(parts)
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Serialise page to a plain dictionary."""
+        return {
+            "page_id": self.page_id,
+            "url": self.url,
+            "quotes": [q.to_dict() for q in self.quotes],
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "Page":
+        """Deserialise a page from a dictionary."""
+        return cls(
+            page_id=data["page_id"],
+            url=data["url"],
+            quotes=[Quote.from_dict(q) for q in data["quotes"]],
         )
 
 
@@ -208,17 +242,17 @@ class Crawler:
 
     # ----- main entry point -----
 
-    def crawl(self) -> List[Quote]:
+    def crawl(self) -> List[Page]:
         """Crawl all pages of the quotes site.
 
         Iterates through paginated listing pages, extracts quotes, and
-        assigns each a unique ``doc_id``.
+        groups them by page. Each page becomes one indexed document.
 
         Returns:
-            Ordered list of :class:`Quote` objects.
+            Ordered list of :class:`Page` objects.
         """
-        quotes: List[Quote] = []
-        doc_id_counter = 0
+        pages: List[Page] = []
+        page_id_counter = 0
         path = "/page/1/"
 
         while path is not None:
@@ -231,21 +265,25 @@ class Crawler:
                 break
 
             raw_quotes = parse_quotes(html)
-            for raw in raw_quotes:
-                quotes.append(Quote(
-                    doc_id=doc_id_counter,
-                    text=raw["text"],
-                    author=raw["author"],
-                    tags=raw["tags"],
+            quotes = [
+                Quote(text=raw["text"], author=raw["author"], tags=raw["tags"])
+                for raw in raw_quotes
+            ]
+
+            if quotes:
+                pages.append(Page(
+                    page_id=page_id_counter,
+                    url=url,
+                    quotes=quotes,
                 ))
-                doc_id_counter += 1
+                page_id_counter += 1
 
             path = has_next_page(html)
             logger.info(
-                "Extracted %d quotes so far. Next page: %s",
-                len(quotes),
+                "Crawled %d pages so far. Next page: %s",
+                len(pages),
                 path,
             )
 
-        logger.info("Crawling complete — %d quotes collected.", len(quotes))
-        return quotes
+        logger.info("Crawling complete — %d pages collected.", len(pages))
+        return pages

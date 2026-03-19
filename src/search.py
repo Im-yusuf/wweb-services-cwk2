@@ -298,8 +298,8 @@ class SearchEngine:
     def search(self, query: str, top_k: int = 10) -> List[SearchResult]:
         """Perform a ranked search using TF-IDF scoring.
 
-        For multi-word queries the score is the sum of TF-IDF values for
-        each query term present in the document.
+        For multi-word queries, only pages containing ALL query terms are
+        returned (AND semantics), ranked by the sum of TF-IDF scores.
 
         Args:
             query: Raw user query (one or more words).
@@ -315,20 +315,31 @@ class SearchEngine:
         if not terms:
             return []
 
-        # Accumulate scores per document
-        scores: Dict[int, float] = defaultdict(float)
+        # Find pages containing ALL query terms (AND semantics)
+        matching_docs: Optional[Set[int]] = None
+        for term in terms:
+            postings = self.indexer.get_postings(term)
+            if postings is None:
+                return []  # Term not in index → no pages match
+            term_docs = set(postings.keys())
+            if matching_docs is None:
+                matching_docs = term_docs
+            else:
+                matching_docs = matching_docs & term_docs
 
+        if not matching_docs:
+            return []
+
+        # Rank matching pages by TF-IDF sum
+        scores: Dict[int, float] = defaultdict(float)
         for term in terms:
             postings = self.indexer.get_postings(term)
             if postings is None:
                 continue
             idf = self.indexer.get_idf(term)
-            for doc_id, posting in postings.items():
-                tf = posting["tf"]
-                scores[doc_id] += tf * idf
-
-        if not scores:
-            return []
+            for doc_id in matching_docs:
+                if doc_id in postings:
+                    scores[doc_id] += postings[doc_id]["tf"] * idf
 
         # Sort by score descending, then by doc_id ascending for stability
         ranked = sorted(scores.items(), key=lambda x: (-x[1], x[0]))
@@ -461,9 +472,9 @@ class SearchEngine:
         if not query or not query.strip():
             return []
 
-        # Detect Boolean operators (must be whole words)
+        # Detect Boolean operators (uppercase only, must be whole words)
         boolean_pattern = r"\b(AND|OR|NOT)\b|[()]"
-        if re.search(boolean_pattern, query, re.IGNORECASE):
+        if re.search(boolean_pattern, query):
             return self.boolean_search(query)
 
         return self.search(query, top_k=top_k)
